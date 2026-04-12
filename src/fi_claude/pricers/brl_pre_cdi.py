@@ -47,19 +47,20 @@ def price_brl_pre_cdi_swap(
         swap.start_date, swap.end_date, DayCountConvention.BUS_252, business_days
     )
 
-    # Fixed leg: notional × (1 + fixed_rate)^yf
-    fixed_leg_fv = float(swap.notional) * (1.0 + swap.fixed_rate) ** yf
-
     # Discount factor to start and end dates
     df_start = interpolate_discount_factor(curve, swap.start_date)
     df_end = interpolate_discount_factor(curve, swap.end_date)
 
-    # Float leg PV at valuation: notional × (df_start / df_end) - notional
-    # (the CDI leg is worth par at start; its PV is driven by the curve ratio)
-    float_leg_pv = float(swap.notional) * (df_start / df_end)
-
-    # Fixed leg PV: discount the future value back
+    # Fixed leg: future value = N × (1 + r)^α, present value = FV × df(end)
+    # Reference: OpenGamma QR n.18 §2 — fixed payoff = N × (1+k)^(n·δ)
+    fixed_leg_fv = float(swap.notional) * (1.0 + swap.fixed_rate) ** yf
     fixed_leg_pv = fixed_leg_fv * df_end
+
+    # Float leg: PV = N × df(start)
+    # Reference: OpenGamma QR n.18 §4 — in single-curve, the overnight
+    # compounded product telescopes: V_t = N × P^D(t, t_0).
+    # The CDI leg is worth par at inception, discounted to today.
+    float_leg_pv = float(swap.notional) * df_start
 
     # NPV from the perspective of the fixed-rate payer
     npv_pay_fixed = float_leg_pv - fixed_leg_pv
