@@ -26,6 +26,7 @@ class Currency(str, Enum):
     EUR = "EUR"
     GBP = "GBP"
     JPY = "JPY"
+    MXN = "MXN"
 
 
 class DayCountConvention(str, Enum):
