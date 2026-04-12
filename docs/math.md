@@ -500,7 +500,151 @@ The original market data is untouched — verified by test
 
 ---
 
-## 5. Assumptions and Limitations
+## 5. Seasoning: Theta, Carry, Rolldown, and Risk Evolution
+
+**Source:** `src/fi_claude/risk/seasoning.py`
+
+Seasoning computes the expected P&L and risk changes from the passage
+of time, holding market conditions constant. This is the primary tool
+for understanding a portfolio's "time value" — what happens if nothing
+moves except the clock.
+
+### 5.1 Curve Rolling (The Key Mechanism)
+
+Our curves are defined at absolute dates. Simply advancing the valuation
+date from $t$ to $t+h$ while keeping absolute-date curve nodes unchanged
+produces zero theta — every cashflow reads off the exact same discount
+factor.
+
+The correct approach is **rolling the curve forward**: every curve node
+date shifts by $h$ days, discount factor values are preserved, and the
+reference date advances by $h$.
+
+$$\text{node}'_i = \bigl(d_i + h,\; \text{df}_i\bigr)$$
+
+The instrument's cashflows stay at their original absolute dates, but now
+each cashflow reads off a *shorter* tenor on the rolled curve. On an
+upward-sloping yield curve (where shorter tenors have higher discount
+factors), this produces the "pull to par" / rolldown effect.
+
+**Why this works:** Consider a cashflow at absolute date $T$. Before rolling,
+its tenor is $T - t$. After rolling, its tenor is $T - (t+h) = T - t - h$.
+The curve shape in tenor space is unchanged, but the cashflow has migrated
+to a shorter point. On a normal (upward-sloping) curve, the discount factor
+at the shorter tenor is higher, so $\text{PV}$ increases.
+
+### 5.2 P&L Decomposition
+
+$$\text{total\_theta} = \text{PV}(t+h,\; \text{rolled curves}) - \text{PV}(t,\; \text{original curves})$$
+
+This decomposes into two components:
+
+**Carry:** The income earned by holding the position during $(t, t+h]$.
+
+$$\text{carry} = \sum_{\substack{i \;:\; t < t_{\text{pay},i} \le t+h}} \text{CF}_i$$
+
+Cashflows on the start date are excluded (already settled); cashflows on
+or before the end date are included. For bonds this is coupon income. For
+swaps it is the net of received minus paid legs. For TBAs it is the
+interest plus scheduled principal component of monthly payments that fall
+within the window.
+
+**Rolldown:** The residual change in PV not attributable to income.
+
+$$\text{rolldown} = \text{total\_theta} - \text{carry}$$
+
+Rolldown captures the pure curve-shape effect. On an upward-sloping curve,
+a long bond's rolldown is positive: the passage of time moves cashflows
+to shorter (higher-DF) tenors, increasing PV. On an inverted curve,
+rolldown is negative.
+
+**Annualization:**
+
+$$\text{theta\_annual} = \text{total\_theta} \times \frac{365}{h}$$
+
+Same for carry and rolldown. These provide a standardized comparison
+across different horizon lengths.
+
+### 5.3 DV01 Evolution
+
+DV01 at each horizon is computed via the same bump-and-reprice primitive
+used in the shock suite:
+
+$$\text{DV01}(t) = \text{PV}(t,\; \text{bumped curves}) - \text{PV}(t,\; \text{original curves})$$
+
+where "bumped" means a +1bp parallel shift applied via:
+
+$$\text{df}'(t_i) = \text{df}(t_i) \cdot e^{-1 \cdot t_i / 10000}$$
+
+DV01 is recomputed at the horizon date using the rolled market:
+
+$$\Delta\text{DV01} = \text{DV01}(t+h) - \text{DV01}(t)$$
+
+For a long bond on a normal curve:
+- DV01 is negative (rates up → PV down)
+- As the bond ages, its duration shortens → DV01 magnitude *decreases*
+- So $\Delta\text{DV01} > 0$ (becoming less negative)
+
+### 5.4 CS01 Evolution
+
+CS01 uses the identical bump-and-reprice mechanics as DV01, but applied to
+curves designated as "credit-sensitive" rather than "risk-free." The caller
+specifies `credit_curve_keys` — whichever curves represent issuer or sector
+spread risk.
+
+$$\text{CS01}(t) = \text{PV}(t,\; \text{credit curves bumped +1bp}) - \text{PV}(t,\; \text{base})$$
+
+$$\Delta\text{CS01} = \text{CS01}(t+h) - \text{CS01}(t)$$
+
+When a single curve serves as both risk-free and credit (common for
+government bonds), CS01 = DV01 identically. This is verified by test
+`TestCs01::test_cs01_with_credit_curve`.
+
+For instruments with separate risk-free and credit curves (e.g., a
+corporate bond discounted on a spread curve), CS01 and DV01 are
+independent — shocking the Treasury curve produces DV01, shocking the
+issuer spread curve produces CS01.
+
+### 5.5 The Pricer Interface
+
+Seasoning is instrument-agnostic. The pricer is a `Callable[[MarketData], PricingResult]`
+with instrument-specific args already bound:
+
+```python
+# Bind instrument args, expose only the MarketData dependency
+pricer = lambda m: price_tba(tba, m)
+pricer = lambda m: price_brl_pre_cdi_swap(swap, m, business_days=252)
+
+# Seasoning works identically regardless of instrument type
+result = compute_seasoning(pricer, market, horizon_days=7,
+                           rate_curve_keys=("USD",))
+```
+
+This is the Grokking Simplicity pattern: the pricer is a *calculation*
+(pure function over data), and seasoning composes it with curve-rolling and
+bump-and-reprice to produce higher-order analytics — all still pure
+calculations.
+
+### 5.6 Multi-Horizon Reports
+
+`season_portfolio` runs `compute_seasoning` at each horizon and bundles
+results:
+
+```python
+report = season_portfolio(pricer, market,
+            horizons=(1, 7, 30),          # 1D, 1W, 1M
+            rate_curve_keys=("USD",),
+            credit_curve_keys=("USD-SPREAD",))
+
+for h in report.horizons:
+    print(f"{h.horizon_label}: theta={h.total_theta:,.0f}  "
+          f"carry={h.carry:,.0f}  rolldown={h.rolldown:,.0f}  "
+          f"DV01Δ={h.dv01_change}")
+```
+
+---
+
+## 6. Assumptions and Limitations
 
 **Interpolation:** Only linear and log-linear are implemented. Cubic spline
 and flat-forward are declared in the `InterpolationMethod` enum but fall back
@@ -528,3 +672,14 @@ as their currency code (e.g., `"USD"`, `"EUR"`). The CIP formula uses the
 spot rate from `fx_spot_rates` — if the spot hasn't been shocked but rates
 have, the formula still recomputes forward points, which is correct (the
 spot is just unchanged).
+
+**Seasoning / curve rolling:** The roll-forward methodology assumes
+curves are defined in tenor space (same shape, shifted reference date).
+This is the standard "hold curve constant" assumption. It does not capture:
+(a) seasonal patterns in funding costs, (b) roll effects at specific tenor
+boundaries (e.g., the 10y→9y11m roll vs the 10y→9y roll when a new
+benchmark is issued), or (c) the difference between business-day and
+calendar-day rolling for BUS/252 conventions. For BRL instruments, the
+business-day semantics of BUS/252 mean a 7-calendar-day roll includes
+only ~5 business days — the carry/rolldown split is correct but the
+annualization implicitly assumes calendar days.
