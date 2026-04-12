@@ -15,7 +15,7 @@ from datetime import date
 from decimal import Decimal
 
 from fi_claude.curves.interpolation import interpolate_discount_factor
-from fi_claude.data.common import Cashflow, Currency
+from fi_claude.data.common import Cashflow, CashflowType, Currency
 from fi_claude.data.instruments import XccyBasisSwap, XccyLeg
 from fi_claude.data.market import MarketData
 from fi_claude.data.results import PricingResult
@@ -59,17 +59,56 @@ def price_xccy_basis_swap(
 
     # Notional exchanges
     exchange_pv = 0.0
+    exchange_cashflows: list[Cashflow] = []
     if swap.initial_exchange and swap.start_date > valuation:
         df_near_start = interpolate_discount_factor(near_curve, swap.start_date)
         df_far_start = interpolate_discount_factor(far_curve, swap.start_date)
-        exchange_pv -= float(near.notional) * df_near_start
-        exchange_pv += float(far.notional) * df_far_start * fx_spot
+        near_init_pv = -float(near.notional) * df_near_start
+        far_init_pv = float(far.notional) * df_far_start * fx_spot
+        exchange_pv += near_init_pv + far_init_pv
+        exchange_cashflows.append(Cashflow(
+            payment_date=swap.start_date,
+            amount=-near.notional,
+            currency=near.currency,
+            cashflow_type=CashflowType.NOTIONAL_EXCHANGE,
+            label=f"initial exchange {near.currency.value}",
+            discount_factor=df_near_start,
+            present_value=Decimal(str(round(near_init_pv, 2))),
+        ))
+        exchange_cashflows.append(Cashflow(
+            payment_date=swap.start_date,
+            amount=far.notional,
+            currency=far.currency,
+            cashflow_type=CashflowType.NOTIONAL_EXCHANGE,
+            label=f"initial exchange {far.currency.value}",
+            discount_factor=df_far_start,
+            present_value=Decimal(str(round(far_init_pv, 2))),
+        ))
 
     if swap.final_exchange and swap.end_date > valuation:
         df_near_end = interpolate_discount_factor(near_curve, swap.end_date)
         df_far_end = interpolate_discount_factor(far_curve, swap.end_date)
-        exchange_pv += float(near.notional) * df_near_end
-        exchange_pv -= float(far.notional) * df_far_end * fx_spot
+        near_final_pv = float(near.notional) * df_near_end
+        far_final_pv = -float(far.notional) * df_far_end * fx_spot
+        exchange_pv += near_final_pv + far_final_pv
+        exchange_cashflows.append(Cashflow(
+            payment_date=swap.end_date,
+            amount=near.notional,
+            currency=near.currency,
+            cashflow_type=CashflowType.NOTIONAL_EXCHANGE,
+            label=f"final exchange {near.currency.value}",
+            discount_factor=df_near_end,
+            present_value=Decimal(str(round(near_final_pv, 2))),
+        ))
+        exchange_cashflows.append(Cashflow(
+            payment_date=swap.end_date,
+            amount=-far.notional,
+            currency=far.currency,
+            cashflow_type=CashflowType.NOTIONAL_EXCHANGE,
+            label=f"final exchange {far.currency.value}",
+            discount_factor=df_far_end,
+            present_value=Decimal(str(round(far_final_pv, 2))),
+        ))
 
     total_pv = near_pv - far_pv_domestic + exchange_pv
 
@@ -78,7 +117,7 @@ def price_xccy_basis_swap(
         valuation_date=valuation,
         currency=near.currency,
         present_value=Decimal(str(round(total_pv, 2))),
-        cashflows=tuple(cashflows + far_cashflows),
+        cashflows=tuple(cashflows + far_cashflows + exchange_cashflows),
         details={
             "near_leg_pv": round(near_pv, 2),
             "far_leg_pv_domestic": round(far_pv_domestic, 2),
@@ -133,12 +172,19 @@ def _leg_pv(
         spread_accrual = (leg.spread_bps / 10_000) * (period_end - period_start).days / 360.0
         period_cashflow = float(leg.notional) * (fwd_rate + spread_accrual)
 
-        pv += period_cashflow * df_pay
+        cf_pv = period_cashflow * df_pay
+        pv += cf_pv
 
         cashflows_out.append(Cashflow(
             payment_date=payment_date,
             amount=Decimal(str(round(period_cashflow, 2))),
             currency=leg.currency,
+            cashflow_type=CashflowType.INTEREST,
+            label=f"float_leg {leg.currency.value} {leg.floating_index}",
+            accrual_start=period_start,
+            accrual_end=period_end,
+            discount_factor=df_pay,
+            present_value=Decimal(str(round(cf_pv, 2))),
         ))
 
         period_start = period_end

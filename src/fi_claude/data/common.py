@@ -63,6 +63,18 @@ class PayReceive(str, Enum):
     RECEIVE = "RECEIVE"
 
 
+class CashflowType(str, Enum):
+    """What kind of cashflow this is."""
+
+    COUPON = "COUPON"
+    PRINCIPAL = "PRINCIPAL"
+    INTEREST = "INTEREST"
+    PREPAYMENT = "PREPAYMENT"
+    NOTIONAL_EXCHANGE = "NOTIONAL_EXCHANGE"
+    NET = "NET"
+    OTHER = "OTHER"
+
+
 # ---------------------------------------------------------------------------
 # Core value types
 # ---------------------------------------------------------------------------
@@ -74,6 +86,12 @@ class Cashflow(BaseModel, frozen=True):
     payment_date: date
     amount: Decimal
     currency: Currency
+    cashflow_type: CashflowType = CashflowType.OTHER
+    label: str = ""
+    accrual_start: date | None = None
+    accrual_end: date | None = None
+    discount_factor: float | None = None
+    present_value: Decimal | None = None
 
 
 class DiscountFactor(BaseModel, frozen=True):

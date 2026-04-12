@@ -31,7 +31,7 @@ def test_cashflow_projection():
     # Should have many cashflows (360 months minus early payoff)
     assert len(cashflows) > 100
     # First cashflow should be roughly monthly payment
-    _, first_cf = cashflows[0]
+    first_cf = cashflows[0][1]
     assert 5000 < first_cf < 15000  # reasonable monthly range for $1M 30yr 5.5%
 
 
@@ -45,8 +45,8 @@ def test_higher_cpr_means_less_total_principal():
         face=1_000_000, coupon_rate=0.055, term_months=360,
         settlement=date(2025, 7, 15), pool_factor=1.0, cpr=0.30,
     )
-    total_low = sum(cf for _, cf in low_cpr)
-    total_high = sum(cf for _, cf in high_cpr)
+    total_low = sum(row[1] for row in low_cpr)
+    total_high = sum(row[1] for row in high_cpr)
     # Higher prepayment = less total interest paid over the life
     assert total_high < total_low
 
@@ -68,4 +68,5 @@ def test_pool_factor_reduces_cashflows():
         settlement=date(2025, 7, 15), pool_factor=0.5, cpr=0.08,
     )
     # Half the pool factor → roughly half the first cashflow
+    # Compare total cashflow (index 1) for first period
     assert half[0][1] < full[0][1]

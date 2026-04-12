@@ -16,7 +16,7 @@ from decimal import Decimal
 
 from fi_claude.curves.day_count import year_fraction
 from fi_claude.curves.interpolation import interpolate_discount_factor
-from fi_claude.data.common import Cashflow, Currency
+from fi_claude.data.common import Cashflow, CashflowType, Currency
 from fi_claude.data.curves import InflationCurve
 from fi_claude.data.instruments import InflationLinkedBond
 from fi_claude.data.market import MarketData
@@ -59,12 +59,19 @@ def price_inflation_linked_bond(
         period_coupon = coupon_amount * yf
 
         df = interpolate_discount_factor(discount_curve, entry.payment_date)
-        total_pv += period_coupon * df
+        pv_coupon = period_coupon * df
+        total_pv += pv_coupon
 
         cashflows.append(Cashflow(
             payment_date=entry.payment_date,
             amount=Decimal(str(round(period_coupon, 2))),
             currency=bond.currency,
+            cashflow_type=CashflowType.COUPON,
+            label=f"coupon {entry.accrual_start} to {entry.accrual_end}",
+            accrual_start=entry.accrual_start,
+            accrual_end=entry.accrual_end,
+            discount_factor=df,
+            present_value=Decimal(str(round(pv_coupon, 2))),
         ))
 
     # Principal at maturity
@@ -76,12 +83,17 @@ def price_inflation_linked_bond(
             redemption = max(redemption, float(bond.face_value))
 
         df_maturity = interpolate_discount_factor(discount_curve, bond.maturity_date)
-        total_pv += redemption * df_maturity
+        pv_principal = redemption * df_maturity
+        total_pv += pv_principal
 
         cashflows.append(Cashflow(
             payment_date=bond.maturity_date,
             amount=Decimal(str(round(redemption, 2))),
             currency=bond.currency,
+            cashflow_type=CashflowType.PRINCIPAL,
+            label="principal at maturity",
+            discount_factor=df_maturity,
+            present_value=Decimal(str(round(pv_principal, 2))),
         ))
 
     return PricingResult(

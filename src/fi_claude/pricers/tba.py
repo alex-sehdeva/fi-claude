@@ -17,7 +17,7 @@ from datetime import date
 from decimal import Decimal
 
 from fi_claude.curves.interpolation import interpolate_discount_factor
-from fi_claude.data.common import Cashflow, Currency
+from fi_claude.data.common import Cashflow, CashflowType, Currency
 from fi_claude.data.instruments import TbaContract
 from fi_claude.data.market import MarketData
 from fi_claude.data.results import PricingResult
@@ -52,20 +52,55 @@ def price_tba(
         cpr=cpr,
     )
 
-    # Discount each cashflow
+    # Discount each cashflow component
     total_pv = 0.0
     result_cashflows: list[Cashflow] = []
 
-    for cf_date, cf_amount in projected:
+    for cf_date, _total, interest, sched_principal, prepayment in projected:
         if cf_date <= valuation:
             continue
         df = interpolate_discount_factor(curve, cf_date)
-        total_pv += cf_amount * df
+
+        # Interest component
+        interest_pv = interest * df
+        total_pv += interest_pv
         result_cashflows.append(Cashflow(
             payment_date=cf_date,
-            amount=Decimal(str(round(cf_amount, 2))),
+            amount=Decimal(str(round(interest, 2))),
             currency=Currency.USD,
+            cashflow_type=CashflowType.INTEREST,
+            label="interest",
+            discount_factor=df,
+            present_value=Decimal(str(round(interest_pv, 2))),
         ))
+
+        # Scheduled principal component
+        if sched_principal > 0.005:
+            sched_pv = sched_principal * df
+            total_pv += sched_pv
+            result_cashflows.append(Cashflow(
+                payment_date=cf_date,
+                amount=Decimal(str(round(sched_principal, 2))),
+                currency=Currency.USD,
+                cashflow_type=CashflowType.PRINCIPAL,
+                label="scheduled principal",
+                discount_factor=df,
+                present_value=Decimal(str(round(sched_pv, 2))),
+            ))
+
+        # Prepayment component
+        if prepayment > 0.005:
+            prepay_pv = prepayment * df
+            total_pv += prepay_pv
+            result_cashflows.append(Cashflow(
+                payment_date=cf_date,
+                amount=Decimal(str(round(prepayment, 2))),
+                currency=Currency.USD,
+                cashflow_type=CashflowType.PREPAYMENT,
+                label="prepayment",
+                discount_factor=df,
+                present_value=Decimal(str(round(prepay_pv, 2))),
+            ))
 
     return PricingResult(
         instrument_type="TBA",
@@ -93,19 +128,19 @@ def _project_cashflows_cpr(
     settlement: date,
     pool_factor: float,
     cpr: float,
-) -> list[tuple[date, float]]:
+) -> list[tuple[date, float, float, float, float]]:
     """Project mortgage cashflows under a constant prepayment rate.
 
     PSA model: SMM (single monthly mortality) = 1 - (1 - CPR)^(1/12)
 
-    Returns a list of (date, total_cashflow) pairs.
+    Returns a list of (date, total_cashflow, interest, scheduled_principal, prepayment).
     """
     from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
 
     smm = 1.0 - (1.0 - cpr) ** (1.0 / 12.0)
     monthly_rate = coupon_rate / 12.0
     remaining_balance = face * pool_factor
-    cashflows: list[tuple[date, float]] = []
+    cashflows: list[tuple[date, float, float, float, float]] = []
 
     for month in range(1, term_months + 1):
         if remaining_balance < 0.01:
@@ -132,7 +167,7 @@ def _project_cashflows_cpr(
         total_principal = scheduled_principal + prepayment
         total_cashflow = interest + total_principal
 
-        cashflows.append((cf_date, total_cashflow))
+        cashflows.append((cf_date, total_cashflow, interest, scheduled_principal, prepayment))
         remaining_balance -= total_principal
 
     return cashflows
