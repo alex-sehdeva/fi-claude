@@ -169,3 +169,30 @@ class TbaContract(BaseModel, frozen=True):
     assumed_cpr: float | None = None   # constant prepayment rate for pricing
     assumed_cdr: float | None = None   # constant default rate
     loss_severity: float | None = None
+
+
+# ---------------------------------------------------------------------------
+# MXN TIIE Swap
+# ---------------------------------------------------------------------------
+# A TIIE swap exchanges:
+#   - Fixed leg: fixed rate, ACT/360, 28-day (lunar month) payment cycle
+#   - Float leg: TIIE 28-day reference rate, ACT/360
+#
+# Unlike USD swaps (where fixed is semi-annual), both TIIE legs pay
+# at the same frequency. Settlement is T+1 Mexico City business days.
+#
+# Neither Strata nor QuantLib has a turnkey MXN TIIE swap. We model
+# from first principles following Banxico conventions.
+
+
+class MxnTiieSwap(BaseModel, frozen=True):
+    """MXN TIIE (Tasa de Interes Interbancaria de Equilibrio) interest rate swap."""
+
+    notional: Decimal
+    fixed_rate: float                   # annualized, e.g. 0.1100 for 11.00%
+    start_date: date
+    end_date: date
+    pay_receive_fixed: PayReceive       # PAY fixed = receive TIIE
+    payment_frequency_months: int = 1   # 28-day (roughly monthly) periods
+    day_count: DayCountConvention = DayCountConvention.ACT_360
+    currency: Currency = Currency.MXN
