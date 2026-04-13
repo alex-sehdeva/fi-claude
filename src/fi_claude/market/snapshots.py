@@ -115,6 +115,22 @@ def april_10_2026_snapshot() -> MarketData:
         compounding="annual",
     )
 
+    # --- USD-REAL curve (from TIPS real yields, semi-annual compounding) ---
+    # TIPS yields represent real (inflation-adjusted) discount rates.
+    # Source: US Treasury TIPS yields (treasury.gov, April 2026)
+    usd_real = build_yield_curve(
+        val_date,
+        Currency.USD,
+        {
+            "5Y": 0.0185,
+            "7Y": 0.0198,
+            "10Y": 0.0210,
+            "20Y": 0.0228,
+            "30Y": 0.0235,
+        },
+        compounding="semi-annual",
+    )
+
     # --- US CPI inflation curve ---
     # March 2026 CPI-U: +3.3% YoY, +0.9% MoM.
     # Estimated index level: ~325.8 (base period 1982-84=100).
@@ -150,6 +166,7 @@ def april_10_2026_snapshot() -> MarketData:
             "USD": usd,
             "EUR": eur,
             "MXN-TIIE": mxn,
+            "USD-REAL": usd_real,
         },
         inflation_curves={
             "US-CPI": us_cpi,
